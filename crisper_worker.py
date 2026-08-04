@@ -426,6 +426,13 @@ def main() -> int:
         if not raw:
             break
         if len(raw) > MAX_REQUEST_BYTES:
+            # readline returned a partial line; drain the rest of it so the
+            # remainder is not misread as the next request.
+            if not raw.endswith(b"\n"):
+                while True:
+                    more = sys.stdin.buffer.readline(MAX_REQUEST_BYTES)
+                    if not more or more.endswith(b"\n"):
+                        break
             _emit(
                 {
                     "request_id": "unknown",

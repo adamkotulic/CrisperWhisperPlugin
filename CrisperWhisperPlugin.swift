@@ -379,6 +379,9 @@ private final class CrisperWorker: @unchecked Sendable {
     var isConfigured: Bool {
         FileManager.default.isExecutableFile(atPath: pythonURL.path)
             && FileManager.default.fileExists(atPath: scriptURL.path)
+            && FileManager.default.fileExists(
+                atPath: runtimeDirectory.appendingPathComponent("runtime-ready").path
+            )
     }
 
     func request(_ request: WorkerRequest, timeout: TimeInterval) async throws -> WorkerResponse {
@@ -525,7 +528,22 @@ private final class CrisperWorker: @unchecked Sendable {
         for line in completeLines where !line.isEmpty {
             do {
                 let response = try JSONDecoder().decode(WorkerResponse.self, from: line)
-                complete(requestId: response.requestId, result: .success(response), stopProcess: false)
+                let delivered = complete(
+                    requestId: response.requestId,
+                    result: .success(response),
+                    stopProcess: false
+                )
+                if !delivered, response.status != "success" {
+                    // Errors that carry no matching request id (e.g. the worker's
+                    // startup failure) must fail the pending request instead of
+                    // leaving it to hang until its timeout.
+                    terminate(
+                        reason: "Worker reported an unroutable error",
+                        cancellationError: CrisperPluginError.worker(
+                            response.message ?? "Python worker reported an error before accepting requests"
+                        )
+                    )
+                }
             } catch {
                 let raw = String(data: line, encoding: .utf8) ?? "<non-UTF8>"
                 terminate(
@@ -600,11 +618,12 @@ private final class CrisperWorker: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     private func complete(
         requestId: String,
         result: Result<WorkerResponse, Error>,
         stopProcess: Bool
-    ) {
+    ) -> Bool {
         let pendingRequest = stateLock.withLock { () -> PendingRequest? in
             guard pending?.id == requestId else { return nil }
             let current = pending
@@ -615,6 +634,7 @@ private final class CrisperWorker: @unchecked Sendable {
         if stopProcess {
             terminate(reason: "Worker I/O failure", cancellationError: nil)
         }
+        return pendingRequest != nil
     }
 
     private func terminate(reason: String, cancellationError: Error?) {
@@ -652,33 +672,50 @@ private final class CrisperWorker: @unchecked Sendable {
 }
 
 private actor AsyncSerialGate {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private var occupied = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     func run<T: Sendable>(
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        await acquire()
+        try await acquire()
         defer { release() }
         return try await operation()
     }
 
-    private func acquire() async {
+    private func acquire() async throws {
+        try Task.checkCancellation()
         if !occupied {
             occupied = true
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterId = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append(Waiter(id: waiterId, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(waiterId) }
         }
     }
 
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
     private func release() {
-        if waiters.isEmpty {
-            occupied = false
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.continuation.resume()
         } else {
-            let next = waiters.removeFirst()
-            next.resume()
+            occupied = false
         }
     }
 }

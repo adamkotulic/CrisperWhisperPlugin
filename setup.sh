@@ -65,8 +65,9 @@ if command -v uv >/dev/null 2>&1; then
   uv pip install --python "$PYTHON" --upgrade "crisperwhisper[transformers]==2.0.1"
 else
   PYTHON_BOOTSTRAP=""
-  for candidate in python3.12 python3; do
-    if command -v "$candidate" >/dev/null 2>&1; then
+  for candidate in python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && \
+       "$candidate" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 12) else 1)' >/dev/null 2>&1; then
       PYTHON_BOOTSTRAP="$(command -v "$candidate")"
       break
     fi
