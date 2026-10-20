@@ -442,6 +442,10 @@ private final class CrisperWorker: @unchecked Sendable {
     private func ensureProcessLocked() throws {
         if let process, process.isRunning { return }
 
+        // The previous process may have exited before its termination handler
+        // ran; detach its pipes so stale EOF callbacks cannot touch the new one.
+        outputHandle?.readabilityHandler = nil
+        errorHandle?.readabilityHandler = nil
         process = nil
         inputHandle = nil
         outputHandle = nil
@@ -481,18 +485,23 @@ private final class CrisperWorker: @unchecked Sendable {
 
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
+        // At EOF a readability handler keeps firing with empty data until it is
+        // removed, so each handler detaches itself once its pipe closes.
         stdoutHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
-                self?.handleEndOfFile()
+                handle.readabilityHandler = nil
+                self?.handleEndOfFile(from: handle)
             } else {
-                self?.handleStdout(data)
+                self?.handleStdout(data, from: handle)
             }
         }
         stderrHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            if !data.isEmpty {
-                self?.handleStderr(data)
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                self?.handleStderr(data, from: handle)
             }
         }
         newProcess.terminationHandler = { [weak self] terminated in
@@ -515,9 +524,10 @@ private final class CrisperWorker: @unchecked Sendable {
         errorHandle = stderrHandle
     }
 
-    private func handleStdout(_ data: Data) {
+    private func handleStdout(_ data: Data, from handle: FileHandle) {
         var completeLines: [Data] = []
         stateLock.withLock {
+            guard outputHandle === handle else { return }
             outputBuffer.append(data)
             while let newline = outputBuffer.firstIndex(of: 0x0A) {
                 completeLines.append(Data(outputBuffer[..<newline]))
@@ -554,9 +564,10 @@ private final class CrisperWorker: @unchecked Sendable {
         }
     }
 
-    private func handleStderr(_ data: Data) {
+    private func handleStderr(_ data: Data, from handle: FileHandle) {
         let maximumTailBytes = 32_768
         stateLock.withLock {
+            guard errorHandle === handle else { return }
             stderrTail.append(data)
             if stderrTail.count > maximumTailBytes {
                 stderrTail.removeFirst(stderrTail.count - maximumTailBytes)
@@ -564,8 +575,8 @@ private final class CrisperWorker: @unchecked Sendable {
         }
     }
 
-    private func handleEndOfFile() {
-        let shouldTerminate = stateLock.withLock { pending != nil }
+    private func handleEndOfFile(from handle: FileHandle) {
+        let shouldTerminate = stateLock.withLock { outputHandle === handle && pending != nil }
         if shouldTerminate {
             terminate(
                 reason: "Python worker closed stdout",

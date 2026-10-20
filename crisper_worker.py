@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 import traceback
@@ -27,6 +28,7 @@ EXPECTED_CRISPERWHISPER_VERSION = "2.0.1"
 VALID_MODELS = {"large", "medium", "small", "turbo"}
 VALID_MODES = {"verbatim", "intended"}
 MAX_REQUEST_BYTES = 1_048_576
+_MPS_WORD = re.compile(r"\b(?:mps|metal)")
 
 # Keep the protocol stream pristine. Libraries that print() during import/model
 # loading are redirected to stderr instead of breaking JSON parsing in Swift.
@@ -222,7 +224,11 @@ class ModelManager:
 
     @staticmethod
     def detect_language(loaded: LoadedModel, audio_path: Path) -> str:
-        """Detect an ISO 639-1 language with the loaded Whisper model."""
+        """Detect the language with the loaded Whisper model.
+
+        Whisper uses ISO 639-1 codes except for a few 3-letter ones such as
+        "haw" (Hawaiian) and "yue" (Cantonese).
+        """
         from crisperwhisper.audio import load_audio
 
         engine = getattr(loaded.instance, "_engine", None)
@@ -246,7 +252,7 @@ class ModelManager:
         if token is None or not token.startswith("<|") or not token.endswith("|>"):
             raise RuntimeError(f"Unknown detected language token id: {detected_id}")
         language = token[2:-2].lower()
-        if len(language) != 2 or not language.isalpha():
+        if len(language) not in (2, 3) or not language.isalpha():
             raise RuntimeError(f"Invalid detected language token: {token}")
         LOGGER.info("Detected language=%s", language)
         return language
@@ -254,9 +260,10 @@ class ModelManager:
     @staticmethod
     def is_mps_failure(exc: BaseException) -> bool:
         message = f"{type(exc).__name__}: {exc}".lower()
+        # Word-start match so "timestamps" and similar words do not count as MPS.
+        if _MPS_WORD.search(message):
+            return True
         indicators = (
-            "mps",
-            "metal",
             "not implemented for",
             "placeholder storage",
             "unsupported dtype",

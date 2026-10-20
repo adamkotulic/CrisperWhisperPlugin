@@ -52,6 +52,8 @@ CACHE_DIR="$RUNTIME_DIR/cache"
 PYTHON="$VENV_DIR/bin/python3"
 
 mkdir -p "$RUNTIME_DIR" "$CACHE_DIR/huggingface" "$CACHE_DIR/torch"
+# Drop the ready marker first so a failed rebuild never looks installed.
+rm -f "$RUNTIME_DIR/runtime-ready"
 
 export HF_HOME="$CACHE_DIR/huggingface"
 export TORCH_HOME="$CACHE_DIR/torch"
