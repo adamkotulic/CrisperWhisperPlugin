@@ -63,6 +63,11 @@ git pull --ff-only
 ./install.sh --repair
 ```
 
+The plugin ID is `com.adamkotulic.crisperwhisper`; version 1.1.0 and earlier used
+`com.typewhisper.crisperwhisper`, which is reserved for official TypeWhisper
+plugins. After updating from such a version, TypeWhisper may see the plugin as
+new, so select **CrisperWhisper 2.0** again if it is no longer active.
+
 Runtime-only health check:
 
 ```bash

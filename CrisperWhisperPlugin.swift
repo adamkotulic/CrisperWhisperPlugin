@@ -3,7 +3,7 @@ import TypeWhisperPluginSDK
 
 @objc(CrisperWhisperPlugin)
 final class CrisperWhisperPlugin: NSObject, TranscriptionEnginePlugin, @unchecked Sendable {
-    static let pluginId = "com.typewhisper.crisperwhisper"
+    static let pluginId = "com.adamkotulic.crisperwhisper"
     static let pluginName = "CrisperWhisper 2.0"
 
     let providerId = "crisperwhisper"
